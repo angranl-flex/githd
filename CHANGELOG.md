@@ -1,5 +1,15 @@
 # Change Log
 
+## 2.6.0
+
+- Add `Diff Two Commits` to pick the base and the compared side from HEAD, a commit, a branch or a tag.
+- Pick a recent commit of the current branch when entering a commit SHA, or type to search all commits by message or hash.
+- Go back in the commit, branch and tag pickers with the back button, or Backspace on an empty input.
+- Add the Search view to filter the files view by changed lines and by files to include or exclude.
+- Diff a commit with the working tree and edit the files in the diff. Untracked files can be hidden.
+- Restore the files view diff after reloading VS Code.
+- Fix the files view going blank when it refreshes while loading.
+
 ## 2.5.7
 
 - Add refresh to files view.
