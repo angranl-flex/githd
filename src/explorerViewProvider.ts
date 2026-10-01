@@ -159,6 +159,7 @@ function getFormattedLabelAndDesc(relativePath: string): [string, string] {
 }
 
 type CommittedTreeItem = CommittedFileItem | FolderItem | InfoItem;
+type RootItem = FolderItem | InfoItem;
 
 enum RootCommitPosition {
   Current = 0,
@@ -179,11 +180,10 @@ export class ExplorerViewProvider implements vs.TreeDataProvider<CommittedTreeIt
   private _fileWithStats: boolean = false;
 
   private _context: FilesViewContext | undefined;
-  private _treeRoot: (FolderItem | InfoItem)[] = [];
+  private _root: Promise<RootItem[]> | undefined;
   private _rootCommitPosition: RootCommitPosition = RootCommitPosition.Current;
 
   private _view: vs.TreeView<CommittedTreeItem>;
-  private _building: boolean = false;
 
   constructor(
     context: vs.ExtensionContext,
@@ -280,7 +280,7 @@ export class ExplorerViewProvider implements vs.TreeDataProvider<CommittedTreeIt
     );
 
     vs.window.onDidChangeActiveTextEditor(async (editor: vs.TextEditor | undefined) => {
-      if (this._view.visible && this._treeRoot.length > 0 && editor) {
+      if (this._view.visible && editor) {
         const item = await this.findItemByPath(editor.document.uri);
         if (item) {
           this._view.reveal(item);
@@ -311,20 +311,8 @@ export class ExplorerViewProvider implements vs.TreeDataProvider<CommittedTreeIt
 
   async getChildren(element?: CommittedTreeItem): Promise<CommittedTreeItem[]> {
     if (!element) {
-      if (this._treeRoot.length === 0) {
-        // when there is a vscode extension restart, there could be multiple events
-        // coming in here and we only want to build the tree once. Mostly this is a
-        // vscode bug.
-        if (this._building) {
-          return [];
-        }
-        this._building = true;
-
-        // build the tree here so that we can show the loading indicator
-        await this._build();
-        this._building = false;
-      }
-      return this._treeRoot;
+      // build the tree here so that we can show the loading indicator
+      return (this._root ??= this._build());
     }
     let items: CommittedTreeItem[] = [];
     let folder = element as FolderItem;
@@ -348,7 +336,7 @@ export class ExplorerViewProvider implements vs.TreeDataProvider<CommittedTreeIt
       return;
     }
     this._rootCommitPosition = RootCommitPosition.Previous;
-    this._treeRoot = [];
+    this._root = undefined;
     this._onDidChange.fire(undefined);
   }
 
@@ -359,7 +347,7 @@ export class ExplorerViewProvider implements vs.TreeDataProvider<CommittedTreeIt
       return;
     }
     this._rootCommitPosition = RootCommitPosition.Next;
-    this._treeRoot = [];
+    this._root = undefined;
     this._onDidChange.fire(undefined);
   }
 
@@ -376,34 +364,33 @@ export class ExplorerViewProvider implements vs.TreeDataProvider<CommittedTreeIt
     return !this._context?.isStash && !!this._context?.rightRef && !this._context?.leftRef;
   }
 
-  private async _build(): Promise<void> {
+  private async _build(): Promise<RootItem[]> {
     if (this._rootCommitPosition === RootCommitPosition.Current) {
       return this._buildCurrentCommit();
     }
     return this._buildNeighborCommit();
   }
 
-  private async _buildCurrentCommit(): Promise<void> {
-    if (!this._context) {
+  private async _buildCurrentCommit(): Promise<RootItem[]> {
+    const context = this._context;
+    if (!context) {
       vs.commands.executeCommand('setContext', 'githd.hasPreviousCommit', false);
       vs.commands.executeCommand('setContext', 'githd.hasNextCommit', false);
-      return;
+      return [];
     }
 
-    const leftRef = this._context.leftRef;
-    const rightRef = this._context.rightRef;
-    const specifiedPath = this._context.specifiedPath;
-    const lineInfo = this._context.focusedLineInfo;
+    const { repo, leftRef, rightRef, specifiedPath, isStash } = context;
+    const lineInfo = context.focusedLineInfo;
 
     if (!rightRef) {
-      return;
+      return [];
     }
 
     // Update related contexts asynchronously
     Promise.resolve().then(async () => {
       if (this._isCommitsView()) {
         vs.commands.executeCommand('setContext', 'githd.commitsView', true);
-        const [hasPrevious, hasNext] = await this._dataloader.hasNeighborCommits(this._context?.repo, rightRef);
+        const [hasPrevious, hasNext] = await this._dataloader.hasNeighborCommits(repo, rightRef);
         vs.commands.executeCommand('setContext', 'githd.hasPreviousCommit', hasPrevious);
         vs.commands.executeCommand('setContext', 'githd.hasNextCommit', hasNext);
       } else {
@@ -413,32 +400,29 @@ export class ExplorerViewProvider implements vs.TreeDataProvider<CommittedTreeIt
       }
     });
 
-    const [stats, committedFiles]: [string, GitCommittedFile[]] = await this._gitService.getCommittedFiles(
-      this._context.repo,
-      rightRef,
-      leftRef,
-      this._context.isStash
-    );
-    if (!leftRef) {
-      await this._buildCommitInfo(stats);
-    }
+    const [stats, committedFiles] = await this._gitService.getCommittedFiles(repo, rightRef, leftRef, isStash);
+
+    const info = leftRef ? [] : [this._buildCommitInfo(stats)];
     if (!leftRef && !specifiedPath) {
-      this._buildCommitTree(committedFiles, rightRef);
+      return [...info, this._buildCommitTree(committedFiles, rightRef)];
     } else if (leftRef && !specifiedPath) {
-      this._buildDiffBranchTree(committedFiles, leftRef, rightRef);
+      return [this._buildDiffBranchTree(committedFiles, leftRef, rightRef)];
     } else if (!leftRef && specifiedPath) {
-      await this._buildPathSpecifiedCommitTree(committedFiles, specifiedPath, rightRef, lineInfo);
+      return [
+        ...info,
+        ...(await this._buildPathSpecifiedCommitTree(committedFiles, specifiedPath, rightRef, lineInfo))
+      ];
     } else {
-      await this._buildPathSpecifiedDiffBranchTree(committedFiles, this._context);
+      return this._buildPathSpecifiedDiffBranchTree(committedFiles, context);
     }
   }
 
-  private async _buildNeighborCommit(): Promise<void> {
+  private async _buildNeighborCommit(): Promise<RootItem[]> {
     const position: RootCommitPosition = this._rootCommitPosition;
     this._rootCommitPosition = RootCommitPosition.Current;
 
     if (!this._context?.rightRef) {
-      return;
+      return [];
     }
 
     const repo = this._context.repo;
@@ -447,32 +431,31 @@ export class ExplorerViewProvider implements vs.TreeDataProvider<CommittedTreeIt
       position === RootCommitPosition.Previous
         ? await this._dataloader.getPreviousCommit(repo, ref)
         : await this._dataloader.getNextCommit(repo, ref);
-    if (commit) {
-      this._context = { rightRef: commit, repo: this._context.repo };
-      this._treeRoot = [];
-      await this._buildCurrentCommit();
-      this._model.setFilesViewContext(this._context);
+    if (!commit) {
+      return [];
     }
+    this._context = { rightRef: commit, repo: this._context.repo };
+    const root = await this._buildCurrentCommit();
+    this._model.setFilesViewContext(this._context);
+    return root;
   }
 
   private async _update(): Promise<void> {
-    this._treeRoot = [];
+    this._root = undefined;
     this._rootCommitPosition = RootCommitPosition.Current;
     this._onDidChange.fire(undefined);
   }
 
-  private async _buildCommitInfo(stats: string): Promise<void> {
-    this._treeRoot.push(
-      new InfoItem(`${this.commitOrStashString} Info`, stats.replace(/(\b(insertions?|deletions?)\b)/g, ''))
-    );
+  private _buildCommitInfo(stats: string): InfoItem {
+    return new InfoItem(`${this.commitOrStashString} Info`, stats.replace(/(\b(insertions?|deletions?)\b)/g, ''));
   }
 
-  private _buildCommitTree(files: GitCommittedFile[], ref: string) {
-    this._buildCommitFolder(`${this.commitOrStashString}`, ref, files);
+  private _buildCommitTree(files: GitCommittedFile[], ref: string): FolderItem {
+    return this._buildCommitFolder(`${this.commitOrStashString}`, ref, files);
   }
 
-  private _buildDiffBranchTree(files: GitCommittedFile[], leftRef: string, rightRef: string) {
-    this._buildCommitFolder(`Diffs between ${leftRef} and ${rightRef}`, `(${files.length} files)`, files);
+  private _buildDiffBranchTree(files: GitCommittedFile[], leftRef: string, rightRef: string): FolderItem {
+    return this._buildCommitFolder(`Diffs between ${leftRef} and ${rightRef}`, `(${files.length} files)`, files);
   }
 
   private async _buildPathSpecifiedCommitTree(
@@ -480,18 +463,21 @@ export class ExplorerViewProvider implements vs.TreeDataProvider<CommittedTreeIt
     specifiedPath: vs.Uri,
     ref: string,
     lineInfo?: string
-  ): Promise<void> {
-    await this._buildFocusFolder('Focus', files, specifiedPath, lineInfo);
-    this._buildCommitTree(files, ref);
+  ): Promise<FolderItem[]> {
+    return [
+      ...(await this._buildFocusFolder('Focus', files, specifiedPath, lineInfo)),
+      this._buildCommitTree(files, ref)
+    ];
   }
 
-  private async _buildPathSpecifiedDiffBranchTree(files: GitCommittedFile[], context: FilesViewContext): Promise<void> {
-    if (context.specifiedPath) {
-      await this._buildFocusFolder(`${context.leftRef} .. ${context.rightRef}`, files, context.specifiedPath);
-    }
+  private async _buildPathSpecifiedDiffBranchTree(
+    files: GitCommittedFile[],
+    context: FilesViewContext
+  ): Promise<FolderItem[]> {
+    return this._buildFocusFolder(`${context.leftRef} .. ${context.rightRef}`, files, context.specifiedPath as vs.Uri);
   }
 
-  private _buildCommitFolder(label: string, description: string, committedFiles: GitCommittedFile[]) {
+  private _buildCommitFolder(label: string, description: string, committedFiles: GitCommittedFile[]): FolderItem {
     let folder = new FolderItem(
       'root-folder-' + (this._withFolder ? 'tree' : 'list'),
       undefined,
@@ -501,7 +487,7 @@ export class ExplorerViewProvider implements vs.TreeDataProvider<CommittedTreeIt
       this._rootFolderIcon
     );
     this._buildFileTree(folder, committedFiles);
-    this._treeRoot.push(folder);
+    return folder;
   }
 
   private async _buildFocusFolder(
@@ -509,7 +495,7 @@ export class ExplorerViewProvider implements vs.TreeDataProvider<CommittedTreeIt
     committedFiles: GitCommittedFile[],
     specifiedPath: vs.Uri,
     lineInfo?: string
-  ): Promise<void> {
+  ): Promise<FolderItem[]> {
     const relativePath: string = (await this._gitService.getGitRelativePath(specifiedPath)) ?? '';
     let folder = new FolderItem(
       'focus-folder-' + (this._withFolder ? 'tree' : 'list'),
@@ -538,9 +524,7 @@ export class ExplorerViewProvider implements vs.TreeDataProvider<CommittedTreeIt
       });
       this._buildFileTree(folder, focus);
     }
-    if (folder.files.length + folder.subFolders.length > 0 || folder.infoItem) {
-      this._treeRoot.push(folder);
-    }
+    return folder.files.length + folder.subFolders.length > 0 || folder.infoItem ? [folder] : [];
   }
 
   private _showFilesTreeView(folder: FolderItem) {
@@ -583,8 +567,9 @@ export class ExplorerViewProvider implements vs.TreeDataProvider<CommittedTreeIt
           }
         }
       }
-      for (let i = 0; i < this._treeRoot.length; i++) {
-        const found = findRecursive(this._treeRoot[i] as FolderItem);
+      const root = (await this._root) ?? [];
+      for (let i = 0; i < root.length; i++) {
+        const found = findRecursive(root[i] as FolderItem);
         if (found) {
           return found;
         }
