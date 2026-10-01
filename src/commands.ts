@@ -65,26 +65,42 @@ interface RepoPickItem extends vs.QuickPickItem {
   repo: GitRepo;
 }
 
+const Back = Symbol('back');
+
 interface RefPickItem extends vs.QuickPickItem {
   ref?: string; // defaults to the label
-  pick?: () => Promise<string | undefined>; // opens a sub-picker that resolves the ref
+  pick?: () => Promise<string | typeof Back | undefined>; // opens a sub-picker that resolves the ref
 }
 
-// Resolves to the accepted item, the typed text when no item matches, or undefined when dismissed.
+// Enables the Backspace keybinding of workbench.action.quickInputBack (see package.json).
+function setBackOnBackspace(on: boolean) {
+  vs.commands.executeCommand('setContext', 'githd.backOnBackspace', on);
+}
+
+// Resolves to the accepted item, the typed text when no item matches, Back when the back button,
+// its keybinding or Backspace on an empty input is triggered, or undefined when dismissed.
+// It resolves once the picker is hidden, so that the next picker sets the Backspace context after this one clears it.
 function showRefPick(
   items: RefPickItem[] | Thenable<RefPickItem[]>,
-  placeholder: string
-): Promise<RefPickItem | string | undefined> {
+  placeholder: string,
+  back: boolean
+): Promise<RefPickItem | string | typeof Back | undefined> {
   const picker = vs.window.createQuickPick<RefPickItem>();
   picker.placeholder = placeholder;
   picker.matchOnDescription = true;
+  picker.buttons = back ? [vs.QuickInputButtons.Back] : [];
   picker.busy = true;
   Promise.resolve(items).then(items => {
     picker.items = items;
     picker.busy = false;
   });
-  let picked: RefPickItem | string | undefined;
+  let picked: RefPickItem | string | typeof Back | undefined;
   return new Promise(resolve => {
+    picker.onDidChangeValue(value => setBackOnBackspace(back && !value));
+    picker.onDidTriggerButton(() => {
+      picked = Back;
+      picker.hide();
+    });
     picker.onDidAccept(() => {
       const accepted = picker.activeItems[0] ?? picker.value.trim();
       if (accepted) {
@@ -93,9 +109,11 @@ function showRefPick(
       }
     });
     picker.onDidHide(() => {
+      setBackOnBackspace(false);
       picker.dispose();
       resolve(picked);
     });
+    setBackOnBackspace(back);
     picker.show();
   });
 }
@@ -344,7 +362,11 @@ export class CommandCenter {
         label: '$(git-commit) Commit...',
         description: 'recent commits on the current branch, or any SHA',
         pick: () =>
-          this._pickRef(this._commitItems(repo), 'Search recent commits by message, hash or author, or type any ref')
+          this._pickRef(
+            this._commitItems(repo),
+            'Search recent commits by message, hash or author, or type any ref',
+            true
+          )
       },
       {
         label: '$(git-branch) Branch...',
@@ -352,22 +374,32 @@ export class CommandCenter {
         pick: () =>
           this._pickRef(
             selectBranch(this._gitService, repo, [GitRefType.Head, GitRefType.RemoteHead]),
-            'Select a branch'
+            'Select a branch',
+            true
           )
       },
       {
         label: '$(tag) Tag...',
-        pick: () => this._pickRef(selectBranch(this._gitService, repo, [GitRefType.Tag]), 'Select a tag')
+        pick: () => this._pickRef(selectBranch(this._gitService, repo, [GitRefType.Tag]), 'Select a tag', true)
       }
     ];
-    const leftRef = await this._pickRef(items, 'Select the base (left) commit');
-    if (!leftRef) {
-      return;
+    const refs: string[] = [];
+    while (refs.length < 2) {
+      const ref = await this._pickRef(
+        items,
+        refs.length ? `Select the commit to compare against ${refs[0]}` : 'Select the base (left) commit',
+        refs.length > 0
+      );
+      if (ref === undefined) {
+        return;
+      }
+      if (ref === Back) {
+        refs.pop();
+      } else {
+        refs.push(ref);
+      }
     }
-    const rightRef = await this._pickRef(items, `Select the commit to compare against ${leftRef}`);
-    if (!rightRef) {
-      return;
-    }
+    const [leftRef, rightRef] = refs;
     this._model.setFilesViewContext({ repo, leftRef, rightRef });
   }
 
@@ -541,7 +573,8 @@ export class CommandCenter {
         pick: () =>
           this._pickRef(
             this._commitItems(repo),
-            `Search recent commits, or type a ref to compare with ${ref} or 'ref1 .. ref2' to compare two refs`
+            `Search recent commits, or type a ref to compare with ${ref} or 'ref1 .. ref2' to compare two refs`,
+            true
           )
       },
       ...(await selectBranch(this._gitService, repo)),
@@ -550,7 +583,7 @@ export class CommandCenter {
     const placeHolder: string = `Select a ref to see it's diff with ${ref} or select two refs to see their diffs`;
     let leftRef = await this._pickRef(items, placeHolder);
     let rightRef = ref;
-    if (!leftRef) {
+    if (typeof leftRef !== 'string') {
       return;
     }
 
@@ -568,16 +601,22 @@ export class CommandCenter {
     });
   }
 
-  // Picking an item with a sub-picker opens it.
+  // Picking an item with a sub-picker opens it, and going back from there shows `items` again.
   private async _pickRef(
     items: RefPickItem[] | Thenable<RefPickItem[]>,
-    placeHolder: string
-  ): Promise<string | undefined> {
-    const picked = await showRefPick(items, placeHolder);
-    if (typeof picked !== 'object') {
-      return picked;
+    placeHolder: string,
+    back = false
+  ): Promise<string | typeof Back | undefined> {
+    for (;;) {
+      const picked = await showRefPick(items, placeHolder, back);
+      if (typeof picked !== 'object') {
+        return picked;
+      }
+      const ref = picked.pick ? await picked.pick() : (picked.ref ?? picked.label);
+      if (ref !== Back) {
+        return ref;
+      }
     }
-    return picked.pick ? picked.pick() : (picked.ref ?? picked.label);
   }
 
   private async _commitItems(repo: GitRepo): Promise<RefPickItem[]> {

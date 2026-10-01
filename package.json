@@ -413,6 +413,13 @@
                 "category": "GitHD"
             }
         ],
+        "keybindings": [
+            {
+                "command": "workbench.action.quickInputBack",
+                "key": "backspace",
+                "when": "inQuickOpen && githd.backOnBackspace"
+            }
+        ],
         "menus": {
             "commandPalette": [
                 {
