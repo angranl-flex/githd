@@ -22,13 +22,9 @@ function toGitUri(uri: vs.Uri, ref?: string): vs.Uri {
   });
 }
 
-async function selectBranch(
-  gitService: GitService,
-  repo: GitRepo,
-  allowEnterSha?: boolean
-): Promise<vs.QuickPickItem[]> {
+async function selectBranch(gitService: GitService, repo: GitRepo): Promise<vs.QuickPickItem[]> {
   const refs = await gitService.getRefs(repo);
-  const items = refs.map(ref => {
+  return refs.map(ref => {
     let description: string | undefined;
     if (ref.type === GitRefType.Head) {
       description = ref.commit;
@@ -39,8 +35,6 @@ async function selectBranch(
     }
     return { label: ref.name || ref.commit, description };
   });
-  if (allowEnterSha) items.unshift(new EnterShaPickItem());
-  return items;
 }
 
 async function branchCombination(gitService: GitService, repo: GitRepo): Promise<vs.QuickPickItem[]> {
@@ -67,10 +61,39 @@ interface RepoPickItem extends vs.QuickPickItem {
   repo: GitRepo;
 }
 
-class EnterShaPickItem implements vs.QuickPickItem {
-  label = 'Enter commit SHA';
-  description = '';
-  openShaTextBox = true;
+interface RefPickItem extends vs.QuickPickItem {
+  ref?: string; // defaults to the label
+  pick?: () => Promise<string | undefined>; // opens a sub-picker that resolves the ref
+}
+
+// Resolves to the accepted item, the typed text when no item matches, or undefined when dismissed.
+function showRefPick(
+  items: RefPickItem[] | Thenable<RefPickItem[]>,
+  placeholder: string
+): Promise<RefPickItem | string | undefined> {
+  const picker = vs.window.createQuickPick<RefPickItem>();
+  picker.placeholder = placeholder;
+  picker.matchOnDescription = true;
+  picker.busy = true;
+  Promise.resolve(items).then(items => {
+    picker.items = items;
+    picker.busy = false;
+  });
+  let picked: RefPickItem | string | undefined;
+  return new Promise(resolve => {
+    picker.onDidAccept(() => {
+      const accepted = picker.activeItems[0] ?? picker.value.trim();
+      if (accepted) {
+        picked = accepted;
+        picker.hide();
+      }
+    });
+    picker.onDidHide(() => {
+      picker.dispose();
+      resolve(picked);
+    });
+    picker.show();
+  });
 }
 
 async function selectGitRepo(gitService: GitService): Promise<GitRepo | undefined> {
@@ -88,13 +111,6 @@ async function selectGitRepo(gitService: GitService): Promise<GitRepo | undefine
     placeHolder: 'Select the git repo'
   });
   return item?.repo;
-}
-
-async function getRefFromQuickPickItem(
-  item: vs.QuickPickItem | EnterShaPickItem,
-  inputBoxTitle: string
-): Promise<string | undefined> {
-  return (<EnterShaPickItem>item).openShaTextBox ? await vs.window.showInputBox({ prompt: inputBoxTitle }) : item.label;
 }
 
 async function selectAuthor(gitService: GitService, repo: GitRepo): Promise<vs.QuickPickItem[]> {
@@ -473,37 +489,60 @@ export class CommandCenter {
   }
 
   private async _diffSelections(repo: GitRepo, specifiedPath?: vs.Uri, ref?: string): Promise<void> {
-    const branches = await selectBranch(this._gitService, repo, true);
-    const branchWithCombination = await branchCombination(this._gitService, repo);
-    const items = [...branches, ...branchWithCombination];
     ref = ref || (await this._loader.getCurrentBranch(repo));
+    const items: RefPickItem[] = [
+      {
+        label: 'Enter commit SHA',
+        description: 'or search recent commits on the current branch',
+        pick: () =>
+          this._pickRef(
+            this._commitItems(repo),
+            `Search recent commits, or type a ref to compare with ${ref} or 'ref1 .. ref2' to compare two refs`
+          )
+      },
+      ...(await selectBranch(this._gitService, repo)),
+      ...(await branchCombination(this._gitService, repo))
+    ];
     const placeHolder: string = `Select a ref to see it's diff with ${ref} or select two refs to see their diffs`;
-    vs.window.showQuickPick(items, { placeHolder: placeHolder }).then(async item => {
-      if (!item) {
-        return;
-      }
-      let leftRef = await getRefFromQuickPickItem(
-        item,
-        `Input a ref(sha1) to compare with ${ref} or ` + `'ref(sha1) .. ref(sha2)' to compare with two commits`
-      );
-      let rightRef = ref;
-      if (!leftRef) {
-        return;
-      }
+    let leftRef = await this._pickRef(items, placeHolder);
+    let rightRef = ref;
+    if (!leftRef) {
+      return;
+    }
 
-      if (leftRef.indexOf('..') != -1) {
-        const diffBranch = leftRef.split('..');
-        leftRef = diffBranch[0].trim();
-        rightRef = diffBranch[1].trim();
-      }
+    if (leftRef.indexOf('..') != -1) {
+      const diffBranch = leftRef.split('..');
+      leftRef = diffBranch[0].trim();
+      rightRef = diffBranch[1].trim();
+    }
 
-      this._model.setFilesViewContext({
-        repo,
-        leftRef,
-        rightRef,
-        specifiedPath
-      });
+    this._model.setFilesViewContext({
+      repo,
+      leftRef,
+      rightRef,
+      specifiedPath
     });
+  }
+
+  // Picking an item with a sub-picker opens it.
+  private async _pickRef(
+    items: RefPickItem[] | Thenable<RefPickItem[]>,
+    placeHolder: string
+  ): Promise<string | undefined> {
+    const picked = await showRefPick(items, placeHolder);
+    if (typeof picked !== 'object') {
+      return picked;
+    }
+    return picked.pick ? picked.pick() : (picked.ref ?? picked.label);
+  }
+
+  private async _commitItems(repo: GitRepo): Promise<RefPickItem[]> {
+    const entries = await this._loader.getLogEntries(repo, true, 0, this._model.configuration.commitsCount, 'HEAD');
+    return entries.map(e => ({
+      label: e.subject,
+      description: `${e.hash}${e.ref} · ${e.author} · ${e.relativeDate}`,
+      ref: e.hash
+    }));
   }
 
   private async _getOrUpdateRepo(): Promise<GitRepo | undefined> {

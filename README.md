@@ -67,7 +67,7 @@ _Press F1_ and type or select below commands to run.
 
 - Select a branch or ref to compare with current branch
 - Select two branches or refs to compare with current branch. You are able to select a local branch to compare with another local or remote branch.
-- Input a SHA to compare with current branch (`F1 -> GitHD: View Branch Diff -> Enter Commit SHA -> SHA`)
+- Pick a recent commit of the current branch, searching by message, hash or author, or type any SHA to compare with current branch (`F1 -> GitHD: View Branch Diff -> Enter Commit SHA`)
 - Input two SHAs to see their diffs (`F1 -> GitHD: View Branch Diff -> Enter Commit SHA -> SHA1 .. SHA2`)
 
 ![Image of diff branch](https://raw.githubusercontent.com/huizhougit/githd/master/resources/diff_branch.gif)
