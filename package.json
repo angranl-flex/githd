@@ -300,6 +300,16 @@
                 "icon": "$(refresh)"
             },
             {
+                "command": "githd.showUntrackedFiles",
+                "title": "Show Untracked Files",
+                "icon": "$(eye)"
+            },
+            {
+                "command": "githd.hideUntrackedFiles",
+                "title": "Hide Untracked Files",
+                "icon": "$(eye-closed)"
+            },
+            {
                 "command": "githd.goForwardNoMore",
                 "title": "No More",
                 "icon": {
@@ -564,6 +574,14 @@
                     "when": "false"
                 },
                 {
+                    "command": "githd.showUntrackedFiles",
+                    "when": "false"
+                },
+                {
+                    "command": "githd.hideUntrackedFiles",
+                    "when": "false"
+                },
+                {
                     "command": "githd.goForwardNoMore",
                     "when": "false"
                 },
@@ -644,6 +662,16 @@
                     "command": "githd.nextCommitNoMore",
                     "when": "view == githd.files && githd.hasGitRepo && !githd.hasNextCommit",
                     "group": "navigation@4"
+                },
+                {
+                    "command": "githd.showUntrackedFiles",
+                    "when": "view == githd.files && githd.workingTreeDiff && githd.hideUntrackedFiles",
+                    "group": "navigation@7"
+                },
+                {
+                    "command": "githd.hideUntrackedFiles",
+                    "when": "view == githd.files && githd.workingTreeDiff && !githd.hideUntrackedFiles",
+                    "group": "navigation@7"
                 },
                                 {
                     "command": "githd.refreshFilesView",

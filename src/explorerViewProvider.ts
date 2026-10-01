@@ -2,12 +2,13 @@ import * as path from 'path';
 import * as fs from 'fs';
 import * as vs from 'vscode';
 
-import { GitService, GitCommittedFile } from './gitService';
+import { GitService, GitCommittedFile, WorkingTree } from './gitService';
 import { Model, FilesViewContext } from './model';
 import { getIconUri } from './icons';
 import { Tracer } from './tracer';
 import { Resource } from './resource';
 import { Dataloader } from './dataloader';
+import { debounce } from './utils';
 
 class InfoItem extends vs.TreeItem {
   constructor(label: string, description?: string) {
@@ -188,6 +189,7 @@ export class ExplorerViewProvider implements vs.TreeDataProvider<CommittedTreeIt
   private _root: Promise<RootItem[]> | undefined;
   private _rootCommitPosition: RootCommitPosition = RootCommitPosition.Current;
   private _filter: FilesFilter = { path: () => true };
+  private _hideUntracked = false;
   // the last loaded diff, so that filtering does not reload it
   private _diff:
     | { key: string; files: Promise<[string, GitCommittedFile[]]>; lines?: Promise<Map<string, string>> }
@@ -275,6 +277,25 @@ export class ExplorerViewProvider implements vs.TreeDataProvider<CommittedTreeIt
         vs.env.clipboard.writeText(this._context?.rightRef ?? '')
       ),
       this._onDidChange
+    );
+
+    // The files on disk can change at any time, while commits do not.
+    const refreshWorkingTree = debounce(() => this._context?.rightRef === WorkingTree && this.refresh(), 1000);
+    const watcher = vs.workspace.createFileSystemWatcher('**');
+    watcher.onDidChange(refreshWorkingTree);
+    watcher.onDidCreate(refreshWorkingTree);
+    watcher.onDidDelete(refreshWorkingTree);
+    const setHideUntracked = (value: boolean) => {
+      this._hideUntracked = value;
+      context.workspaceState.update('githd.hideUntrackedFiles', value);
+      vs.commands.executeCommand('setContext', 'githd.hideUntrackedFiles', value);
+      this._update();
+    };
+    setHideUntracked(context.workspaceState.get('githd.hideUntrackedFiles', false));
+    context.subscriptions.push(
+      watcher,
+      vs.commands.registerCommand('githd.showUntrackedFiles', () => setHideUntracked(false)),
+      vs.commands.registerCommand('githd.hideUntrackedFiles', () => setHideUntracked(true))
     );
 
     this._model.onDidChangeFilesViewContext(
@@ -389,6 +410,7 @@ export class ExplorerViewProvider implements vs.TreeDataProvider<CommittedTreeIt
 
   private async _buildCurrentCommit(): Promise<RootItem[]> {
     this._view.message = undefined;
+    vs.commands.executeCommand('setContext', 'githd.workingTreeDiff', this._context?.rightRef === WorkingTree);
     const context = this._context;
     if (!context) {
       vs.commands.executeCommand('setContext', 'githd.hasPreviousCommit', false);
@@ -427,10 +449,13 @@ export class ExplorerViewProvider implements vs.TreeDataProvider<CommittedTreeIt
     const lines =
       content && (await (diff.lines ??= this._gitService.getChangedLines(repo, rightRef, leftRef, isStash)));
     const committedFiles = allFiles.filter(
-      file => path(file.gitRelativePath) && (content?.test(lines?.get(file.gitRelativePath) ?? '') ?? true)
+      file =>
+        !(this._hideUntracked && file.status === 'U') &&
+        path(file.gitRelativePath) &&
+        (content?.test(lines?.get(file.gitRelativePath) ?? '') ?? true)
     );
     if (committedFiles.length < allFiles.length) {
-      this._view.message = `${committedFiles.length} of ${allFiles.length} files match the search`;
+      this._view.message = `Showing ${committedFiles.length} of ${allFiles.length} files`;
     }
 
     const info = leftRef ? [] : [this._buildCommitInfo(stats)];

@@ -9,6 +9,8 @@ export class Resource {
         return new vs.ThemeColor('gitDecoration.deletedResourceForeground');
       case 'A':
         return new vs.ThemeColor('gitDecoration.addedResourceForeground');
+      case 'U': // untracked
+        return new vs.ThemeColor('gitDecoration.untrackedResourceForeground');
       case 'C':
       case 'R':
         return new vs.ThemeColor('gitDecoration.renamedResourceForeground');

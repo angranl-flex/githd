@@ -23,6 +23,7 @@ GitHD aims to bring the most useful git history inside with the simplest and the
 - View **all the diffs** between current branch and the selected one or between the two selected ones.
 - View the **diff of a file or folder** between current branch and the selected one or between the two selected ones.
 - View file diff between **un-committed local** and specified commit.
+- Diff the **working tree** with a commit, branch or tag, and edit the files in the diff. Untracked files can be hidden.
 - **Search the changed files** as you type, by their changed lines (match case, whole word, regex) and by files to include or exclude.
 - Go back or forward on History view.
 - Go back or forward on Explorer view.

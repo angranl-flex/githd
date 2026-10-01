@@ -7,6 +7,9 @@ import { execSync, spawn } from 'child_process';
 import { Tracer } from './tracer';
 import { isEmptyHash } from './utils';
 
+// A rightRef for the files on disk. It cannot clash with a ref name, which has no spaces.
+export const WorkingTree = 'Working Tree';
+
 const EntrySeparator = '[githd-es]';
 const FormatSeparator = '[githd-fs]';
 
@@ -276,7 +279,7 @@ export class GitService {
     }
     let args = ['show', '--format=%h', '--name-status', rightRef];
     if (leftRef) {
-      args = ['diff', '--name-status', `${leftRef}..${rightRef}`];
+      args = ['diff', '--name-status', rightRef === WorkingTree ? leftRef : `${leftRef}..${rightRef}`];
     } else if (isStash) {
       args.unshift('stash');
     }
@@ -315,6 +318,9 @@ export class GitService {
         files.push(new GitCommittedFileImpl(repo, gitRelativePath, gitRelativeOldPath, status));
       }
     });
+    if (rightRef === WorkingTree) {
+      files.push(...(await this._getUntrackedFiles(repo)).map(file => new GitCommittedFileImpl(repo, file, file, 'U')));
+    }
     const stats: string = !leftRef && !isStash ? await this._updateCommitsStats(repo, rightRef, files) : '';
     return [stats, files];
   }
@@ -329,7 +335,7 @@ export class GitService {
     const options = ['-p', '-U0', '--no-prefix', '--no-color', '--no-ext-diff'];
     let args = ['show', '--format=', ...options, rightRef];
     if (leftRef) {
-      args = ['diff', ...options, `${leftRef}..${rightRef}`];
+      args = ['diff', ...options, rightRef === WorkingTree ? leftRef : `${leftRef}..${rightRef}`];
     } else if (isStash) {
       args.unshift('stash');
     }
@@ -355,7 +361,21 @@ export class GitService {
         }
       }
     });
+    if (rightRef === WorkingTree) {
+      // all lines of an untracked file are added
+      await Promise.all(
+        (await this._getUntrackedFiles(repo)).map(async file =>
+          lines.set(file, await fs.promises.readFile(path.join(repo.root, file), 'utf8'))
+        )
+      );
+    }
     return lines;
+  }
+
+  private async _getUntrackedFiles(repo: GitRepo): Promise<string[]> {
+    const result = await this._exec(['ls-files', '--others', '--exclude-standard', '-z'], repo.root);
+    // skip the trailing empty entry and untracked nested repositories, which end with '/'
+    return result.split('\0').filter(file => file && !file.endsWith('/'));
   }
 
   async getLogEntries(

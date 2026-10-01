@@ -5,7 +5,7 @@ import * as vs from 'vscode';
 import { Model, HistoryViewContext } from './model';
 import { HistoryViewProvider } from './historyViewProvider';
 import { InfoViewProvider } from './infoViewProvider';
-import { GitService, GitRepo, GitRefType, GitCommittedFile } from './gitService';
+import { GitService, GitRepo, GitRefType, GitCommittedFile, WorkingTree } from './gitService';
 import { Tracer } from './tracer';
 import { ExplorerViewProvider } from './explorerViewProvider';
 import { Dataloader } from './dataloader';
@@ -383,10 +383,15 @@ export class CommandCenter {
         pick: () => this._pickRef(selectBranch(this._gitService, repo, [GitRefType.Tag]), 'Select a tag', true)
       }
     ];
+    const workingTree: RefPickItem = {
+      label: '$(edit) Working Tree',
+      description: 'files on disk, editable',
+      ref: WorkingTree
+    };
     const refs: string[] = [];
     while (refs.length < 2) {
       const ref = await this._pickRef(
-        items,
+        refs.length ? [workingTree, ...items] : items,
         refs.length ? `Select the commit to compare against ${refs[0]}` : 'Select the base (left) commit',
         refs.length > 0
       );
@@ -466,8 +471,11 @@ export class CommandCenter {
       title = `${leftRef} .. ${rightRef}`;
     }
     title += ' | ' + path.basename(file.gitRelativePath);
-    let left = file.status == 'A' ? vs.Uri.parse('githd-empty:') : toGitUri(file.oldFileUri, leftRef);
+    let left = ['A', 'U'].includes(file.status) ? vs.Uri.parse('githd-empty:') : toGitUri(file.oldFileUri, leftRef);
     let right = file.status == 'D' ? vs.Uri.parse('githd-empty:') : toGitUri(file.fileUri, rightRef);
+    if (rightRef === WorkingTree && file.status != 'D') {
+      right = file.fileUri; // editable
+    }
     vs.commands.executeCommand<void>('vscode.diff', left, right, title, { preview: true });
   }
 
