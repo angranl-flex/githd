@@ -195,6 +195,11 @@
                 "category": "GitHD"
             },
             {
+                "command": "githd.diffCommits",
+                "title": "Diff Two Commits",
+                "category": "GitHD"
+            },
+            {
                 "command": "githd.viewFileHistory",
                 "title": "GitHD: View File History"
             },

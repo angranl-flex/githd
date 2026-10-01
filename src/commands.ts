@@ -22,8 +22,12 @@ function toGitUri(uri: vs.Uri, ref?: string): vs.Uri {
   });
 }
 
-async function selectBranch(gitService: GitService, repo: GitRepo): Promise<vs.QuickPickItem[]> {
-  const refs = await gitService.getRefs(repo);
+async function selectBranch(
+  gitService: GitService,
+  repo: GitRepo,
+  types = [GitRefType.Head, GitRefType.RemoteHead, GitRefType.Tag]
+): Promise<vs.QuickPickItem[]> {
+  const refs = (await gitService.getRefs(repo)).filter(ref => types.includes(ref.type));
   return refs.map(ref => {
     let description: string | undefined;
     if (ref.type === GitRefType.Head) {
@@ -325,6 +329,46 @@ export class CommandCenter {
   openCommit(repo: GitRepo, ref: string, specifiedPath: vs.Uri): void {
     Tracer.verbose('Command: githd.openCommit');
     this._model.setFilesViewContext({ rightRef: ref, repo, specifiedPath });
+  }
+
+  @command('githd.diffCommits')
+  async diffCommits(): Promise<void> {
+    Tracer.verbose('Command: githd.diffCommits');
+    const repo = await this._getOrUpdateRepo();
+    if (!repo) {
+      return;
+    }
+    const items: RefPickItem[] = [
+      { label: 'HEAD' },
+      {
+        label: '$(git-commit) Commit...',
+        description: 'recent commits on the current branch, or any SHA',
+        pick: () =>
+          this._pickRef(this._commitItems(repo), 'Search recent commits by message, hash or author, or type any ref')
+      },
+      {
+        label: '$(git-branch) Branch...',
+        description: 'local and remote branch heads',
+        pick: () =>
+          this._pickRef(
+            selectBranch(this._gitService, repo, [GitRefType.Head, GitRefType.RemoteHead]),
+            'Select a branch'
+          )
+      },
+      {
+        label: '$(tag) Tag...',
+        pick: () => this._pickRef(selectBranch(this._gitService, repo, [GitRefType.Tag]), 'Select a tag')
+      }
+    ];
+    const leftRef = await this._pickRef(items, 'Select the base (left) commit');
+    if (!leftRef) {
+      return;
+    }
+    const rightRef = await this._pickRef(items, `Select the commit to compare against ${leftRef}`);
+    if (!rightRef) {
+      return;
+    }
+    this._model.setFilesViewContext({ repo, leftRef, rightRef });
   }
 
   @command('githd.goBackHistoryView')
