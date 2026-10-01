@@ -133,9 +133,17 @@
         "views": {
             "githd-explorer": [
                 {
+                    "id": "githd.search",
+                    "type": "webview",
+                    "name": "Search",
+                    "when": "githd.hasGitRepo",
+                    "initialSize": 1
+                },
+                {
                     "id": "githd.files",
                     "name": "Committed Files",
-                    "when": "githd.hasGitRepo"
+                    "when": "githd.hasGitRepo",
+                    "initialSize": 8
                 }
             ],
             "githd-panel": [
@@ -952,6 +960,7 @@
         "chartjs-adapter-date-fns": "^3.0.0",
         "date-fns": "^3.6.0",
         "lodash": "^4.17.21",
-        "lru-cache": "^11.0.1"
+        "lru-cache": "^11.0.1",
+        "minimatch": "^9.0.9"
     }
 }

@@ -161,6 +161,11 @@ function getFormattedLabelAndDesc(relativePath: string): [string, string] {
 type CommittedTreeItem = CommittedFileItem | FolderItem | InfoItem;
 type RootItem = FolderItem | InfoItem;
 
+export interface FilesFilter {
+  path(gitRelativePath: string): boolean;
+  content?: RegExp; // tested against the changed lines of a file
+}
+
 enum RootCommitPosition {
   Current = 0,
   Previous = 1,
@@ -182,6 +187,11 @@ export class ExplorerViewProvider implements vs.TreeDataProvider<CommittedTreeIt
   private _context: FilesViewContext | undefined;
   private _root: Promise<RootItem[]> | undefined;
   private _rootCommitPosition: RootCommitPosition = RootCommitPosition.Current;
+  private _filter: FilesFilter = { path: () => true };
+  // the last loaded diff, so that filtering does not reload it
+  private _diff:
+    | { key: string; files: Promise<[string, GitCommittedFile[]]>; lines?: Promise<Map<string, string>> }
+    | undefined;
 
   private _view: vs.TreeView<CommittedTreeItem>;
 
@@ -352,7 +362,13 @@ export class ExplorerViewProvider implements vs.TreeDataProvider<CommittedTreeIt
   }
 
   async refresh(): Promise<void> {
+    this._diff = undefined;
     await this._update();
+  }
+
+  setFilter(filter: FilesFilter): void {
+    this._filter = filter;
+    this._update();
   }
 
   private get commitOrStashString(): string {
@@ -372,6 +388,7 @@ export class ExplorerViewProvider implements vs.TreeDataProvider<CommittedTreeIt
   }
 
   private async _buildCurrentCommit(): Promise<RootItem[]> {
+    this._view.message = undefined;
     const context = this._context;
     if (!context) {
       vs.commands.executeCommand('setContext', 'githd.hasPreviousCommit', false);
@@ -400,7 +417,21 @@ export class ExplorerViewProvider implements vs.TreeDataProvider<CommittedTreeIt
       }
     });
 
-    const [stats, committedFiles] = await this._gitService.getCommittedFiles(repo, rightRef, leftRef, isStash);
+    const key = JSON.stringify([repo.root, rightRef, leftRef, isStash]);
+    if (this._diff?.key !== key) {
+      this._diff = { key, files: this._gitService.getCommittedFiles(repo, rightRef, leftRef, isStash) };
+    }
+    const diff = this._diff;
+    const [stats, allFiles] = await diff.files;
+    const { path, content } = this._filter;
+    const lines =
+      content && (await (diff.lines ??= this._gitService.getChangedLines(repo, rightRef, leftRef, isStash)));
+    const committedFiles = allFiles.filter(
+      file => path(file.gitRelativePath) && (content?.test(lines?.get(file.gitRelativePath) ?? '') ?? true)
+    );
+    if (committedFiles.length < allFiles.length) {
+      this._view.message = `${committedFiles.length} of ${allFiles.length} files match the search`;
+    }
 
     const info = leftRef ? [] : [this._buildCommitInfo(stats)];
     if (!leftRef && !specifiedPath) {

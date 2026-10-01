@@ -319,6 +319,45 @@ export class GitService {
     return [stats, files];
   }
 
+  // Returns the added and removed lines of each changed file, keyed by its path (the old one if deleted).
+  async getChangedLines(
+    repo: GitRepo,
+    rightRef: string,
+    leftRef?: string,
+    isStash?: boolean
+  ): Promise<Map<string, string>> {
+    const options = ['-p', '-U0', '--no-prefix', '--no-color', '--no-ext-diff'];
+    let args = ['show', '--format=', ...options, rightRef];
+    if (leftRef) {
+      args = ['diff', ...options, `${leftRef}..${rightRef}`];
+    } else if (isStash) {
+      args.unshift('stash');
+    }
+    const result = await this._exec(args, repo.root);
+    const lines = new Map<string, string>();
+    let file = '';
+    let prefix = 0; // width of the +/- columns in a hunk, 0 in a file header
+    result.split('\n').forEach(line => {
+      if (line.startsWith('diff ')) {
+        prefix = 0;
+      } else if (line.startsWith('@@')) {
+        prefix = line.search(/[^@]/) - 1; // '@@' for a diff, '@@@' for a merge with two parents
+      } else if (prefix) {
+        if (line && line[0] !== '\\') {
+          // skip the trailing empty line and '\ No newline at end of file'
+          lines.set(file, (lines.get(file) ?? '') + line.slice(prefix) + '\n');
+        }
+      } else if (line.startsWith('--- ') || line.startsWith('+++ ')) {
+        // a name with a space ends with a tab, and special characters are quoted as in getCommittedFiles
+        const name = line.slice(4).replace(/\t$/, '');
+        if (name !== '/dev/null') {
+          file = name; // '+++' follows '---' so the new path wins
+        }
+      }
+    });
+    return lines;
+  }
+
   async getLogEntries(
     repo: GitRepo,
     express: boolean,

@@ -9,6 +9,7 @@ import { InfoViewProvider } from './infoViewProvider';
 import { BlameViewProvider } from './blameViewProvider';
 import { Dataloader } from './dataloader';
 import { PanelViewProvider } from './panelViewProvider';
+import { SearchViewProvider } from './searchViewProvider';
 import { initializeIcons } from './icons';
 
 export function activate(context: vs.ExtensionContext) {
@@ -19,6 +20,7 @@ export function activate(context: vs.ExtensionContext) {
   let panelView = new PanelViewProvider(context, model);
   let historyViewProvider = new HistoryViewProvider(context, model, dataloader, gitService, panelView);
   let explorerViewProvider = new ExplorerViewProvider(context, model, dataloader, gitService);
+  new SearchViewProvider(context, explorerViewProvider);
   new InfoViewProvider(context, model, gitService);
   new BlameViewProvider(context, model, gitService);
   new CommandCenter(context, model, dataloader, gitService, historyViewProvider, explorerViewProvider);
