@@ -26,6 +26,10 @@ export interface FilesViewContext {
   focusedLineInfo?: string;
 }
 
+// FilesViewContext as kept in the workspace state
+type SavedFilesViewContext = Omit<FilesViewContext, 'specifiedPath'> & { specifiedPath?: string };
+const savedFilesViewContextKey = 'githd.filesViewContext';
+
 export interface HistoryViewContext {
   repo: GitRepo;
   isStash?: boolean;
@@ -107,6 +111,26 @@ export class Model {
       this._onDidChangeConfiguration,
       this._onDidChangeFilesViewContext,
       this._onDidChangeHistoryViewContext
+    );
+
+    // Restore the files view of the last session. A stash is not kept since its index may then name another one.
+    const saved = context.workspaceState.get<SavedFilesViewContext>(savedFilesViewContextKey);
+    if (saved) {
+      this._filesViewContextTracker.setContext({
+        ...saved,
+        specifiedPath: saved.specifiedPath ? vs.Uri.parse(saved.specifiedPath) : undefined
+      });
+    }
+    this._onDidChangeFilesViewContext.event(
+      () => {
+        const current = this.filesViewContext;
+        context.workspaceState.update(
+          savedFilesViewContextKey,
+          current && !current.isStash ? { ...current, specifiedPath: current.specifiedPath?.toString() } : undefined
+        );
+      },
+      null,
+      context.subscriptions
     );
   }
 
