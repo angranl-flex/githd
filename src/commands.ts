@@ -628,7 +628,8 @@ export class CommandCenter {
   }
 
   private async _commitItems(repo: GitRepo): Promise<RefPickItem[]> {
-    const entries = await this._loader.getLogEntries(repo, true, 0, this._model.configuration.commitsCount, 'HEAD');
+    // read from git, since the cached log entries of HEAD are not updated
+    const entries = await this._gitService.getLogEntries(repo, true, 0, this._model.configuration.commitsCount, 'HEAD');
     return entries.map(e => ({
       label: e.subject,
       description: `${e.hash}${e.ref} · ${e.author} · ${e.relativeDate}`,
