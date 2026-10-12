@@ -5,7 +5,7 @@ import * as vs from 'vscode';
 import { Model, HistoryViewContext } from './model';
 import { HistoryViewProvider } from './historyViewProvider';
 import { InfoViewProvider } from './infoViewProvider';
-import { GitService, GitRepo, GitRefType, GitCommittedFile, WorkingTree } from './gitService';
+import { GitService, GitRepo, GitRefType, GitCommittedFile, GitLogEntry, WorkingTree } from './gitService';
 import { Tracer } from './tracer';
 import { ExplorerViewProvider } from './explorerViewProvider';
 import { Dataloader } from './dataloader';
@@ -80,23 +80,39 @@ function setBackOnBackspace(on: boolean) {
 // Resolves to the accepted item, the typed text when no item matches, Back when the back button,
 // its keybinding or Backspace on an empty input is triggered, or undefined when dismissed.
 // It resolves once the picker is hidden, so that the next picker sets the Backspace context after this one clears it.
+// While typing, `search` replaces `items` once the typing pauses.
 function showRefPick(
   items: RefPickItem[] | Thenable<RefPickItem[]>,
   placeholder: string,
-  back: boolean
+  back: boolean,
+  search?: (value: string) => Thenable<RefPickItem[]>
 ): Promise<RefPickItem | string | typeof Back | undefined> {
   const picker = vs.window.createQuickPick<RefPickItem>();
   picker.placeholder = placeholder;
   picker.matchOnDescription = true;
   picker.buttons = back ? [vs.QuickInputButtons.Back] : [];
-  picker.busy = true;
-  Promise.resolve(items).then(items => {
-    picker.items = items;
-    picker.busy = false;
-  });
+  // shows `list` once loaded, unless the input has changed by then
+  const load = (list: RefPickItem[] | Thenable<RefPickItem[]>, value = picker.value) => {
+    picker.busy = true;
+    Promise.resolve(list).then(list => {
+      if (picker.value === value) {
+        picker.items = list;
+        picker.busy = false;
+      }
+    });
+  };
+  load(items);
+  let searching: NodeJS.Timeout | undefined;
   let picked: RefPickItem | string | typeof Back | undefined;
   return new Promise(resolve => {
-    picker.onDidChangeValue(value => setBackOnBackspace(back && !value));
+    picker.onDidChangeValue(value => {
+      setBackOnBackspace(back && !value);
+      if (search) {
+        load(items); // filtered natively until the search returns
+        clearTimeout(searching);
+        searching = value ? setTimeout(() => load(search(value), value), 300) : undefined;
+      }
+    });
     picker.onDidTriggerButton(() => {
       picked = Back;
       picker.hide();
@@ -109,6 +125,7 @@ function showRefPick(
       }
     });
     picker.onDidHide(() => {
+      clearTimeout(searching);
       setBackOnBackspace(false);
       picker.dispose();
       resolve(picked);
@@ -116,6 +133,14 @@ function showRefPick(
     setBackOnBackspace(back);
     picker.show();
   });
+}
+
+function toCommitItems(entries: GitLogEntry[]): RefPickItem[] {
+  return entries.map(e => ({
+    label: e.subject,
+    description: `${e.hash}${e.ref} · ${e.author} · ${e.relativeDate}`,
+    ref: e.hash
+  }));
 }
 
 async function selectGitRepo(gitService: GitService): Promise<GitRepo | undefined> {
@@ -360,13 +385,9 @@ export class CommandCenter {
       { label: 'HEAD' },
       {
         label: '$(git-commit) Commit...',
-        description: 'recent commits on the current branch, or any SHA',
+        description: 'recent commits on the current branch, or search all',
         pick: () =>
-          this._pickRef(
-            this._commitItems(repo),
-            'Search recent commits by message, hash or author, or type any ref',
-            true
-          )
+          this._pickCommit(repo, 'Recent commits on the current branch. Type to search all commits, or enter any ref')
       },
       {
         label: '$(git-branch) Branch...',
@@ -577,12 +598,11 @@ export class CommandCenter {
     const items: RefPickItem[] = [
       {
         label: 'Enter commit SHA',
-        description: 'or search recent commits on the current branch',
+        description: 'or search all commits',
         pick: () =>
-          this._pickRef(
-            this._commitItems(repo),
-            `Search recent commits, or type a ref to compare with ${ref} or 'ref1 .. ref2' to compare two refs`,
-            true
+          this._pickCommit(
+            repo,
+            `Type to search all commits, or a ref to compare with ${ref}, or 'ref1 .. ref2' to compare two refs`
           )
       },
       ...(await selectBranch(this._gitService, repo)),
@@ -613,10 +633,11 @@ export class CommandCenter {
   private async _pickRef(
     items: RefPickItem[] | Thenable<RefPickItem[]>,
     placeHolder: string,
-    back = false
+    back = false,
+    search?: (value: string) => Thenable<RefPickItem[]>
   ): Promise<string | typeof Back | undefined> {
     for (;;) {
-      const picked = await showRefPick(items, placeHolder, back);
+      const picked = await showRefPick(items, placeHolder, back, search);
       if (typeof picked !== 'object') {
         return picked;
       }
@@ -627,14 +648,25 @@ export class CommandCenter {
     }
   }
 
-  private async _commitItems(repo: GitRepo): Promise<RefPickItem[]> {
+  // Lists the recent commits of the current branch. Typing searches the messages of all commits, and a hash.
+  private _pickCommit(repo: GitRepo, placeholder: string): Promise<string | typeof Back | undefined> {
+    const count = this._model.configuration.commitsCount;
     // read from git, since the cached log entries of HEAD are not updated
-    const entries = await this._gitService.getLogEntries(repo, true, 0, this._model.configuration.commitsCount, 'HEAD');
-    return entries.map(e => ({
-      label: e.subject,
-      description: `${e.hash}${e.ref} · ${e.author} · ${e.relativeDate}`,
-      ref: e.hash
-    }));
+    const recent = this._gitService.getLogEntries(repo, true, 0, count, 'HEAD').then(toCommitItems);
+    return this._pickRef(recent, placeholder, true, async value => {
+      const text = value.trim();
+      const [byHash, byMessage, recentItems] = await Promise.all([
+        /^[0-9a-f]{4,40}$/i.test(text) ? this._gitService.getLogEntries(repo, true, 0, 1, text) : [],
+        this._gitService.searchCommits(repo, count, text.split(/\s+/)),
+        recent
+      ]);
+      const found = new Map(toCommitItems([...byHash, ...byMessage]).map(item => [item.ref, item]));
+      // the found commits, then the recent ones that match natively, like by author
+      return [
+        ...[...found.values()].map(item => ({ ...item, alwaysShow: true })),
+        ...recentItems.filter(item => !found.has(item.ref))
+      ];
+    });
   }
 
   private async _getOrUpdateRepo(): Promise<GitRepo | undefined> {

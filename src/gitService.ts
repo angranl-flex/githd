@@ -389,7 +389,8 @@ export class GitService {
     line?: number,
     author?: string,
     startTime?: Date,
-    endTime?: Date
+    endTime?: Date,
+    grep?: string[] // words that must all be in the message, ignoring case
   ): Promise<GitLogEntry[]> {
     Tracer.info(
       `Get entries. repo: ${repo.root}, express: ${express}, start: ${start}, count: ${count}, branch: ${branch}, ` +
@@ -434,6 +435,9 @@ export class GitService {
       }
       if (endTime) {
         args.push(`--before=${endTime.toISOString()}`);
+      }
+      if (grep) {
+        args.push('-i', '-F', '--all-match', ...grep.map(word => `--grep=${word}`));
       }
 
       if (file) {
@@ -515,6 +519,24 @@ export class GitService {
       });
     });
     return entries;
+  }
+
+  // Returns the commits of all refs whose message has all the words, ignoring case.
+  searchCommits(repo: GitRepo, count: number, words: string[]): Promise<GitLogEntry[]> {
+    return this.getLogEntries(
+      repo,
+      true,
+      0,
+      count,
+      '--all',
+      false,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      words
+    );
   }
 
   async getCommitDetails(repo: GitRepo | undefined, ref: string, isStash?: boolean): Promise<string> {
